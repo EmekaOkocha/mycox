@@ -1,7 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 // Assuming your main component file is now inside the src/ folder
-import App from './App.jsx';
+import App from './App.js';
 
 /**
  * This is the standard entry point for a React application.
