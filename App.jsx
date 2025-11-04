@@ -1,26 +1,4 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  onSnapshot, 
-  query, 
-  addDoc, 
-  serverTimestamp,
-  doc,
-  getDocs,
-  getDoc,
-  setDoc,
-  runTransaction,
-  limit,
-  orderBy,
-} from 'firebase/firestore';
 import { 
   User, 
   Lock, 
@@ -39,16 +17,12 @@ import {
   List,
 } from 'lucide-react';
 
-// --- Global Variables (Mandatory for Canvas Environment) ---
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'mycox-product-insights';
-
-// --- MVP CONSTANTS ---
+// --- CONFIGURATION CONSTANTS (Used for In-Memory Mock) ---
 const MAX_USERS = 50;
 const MAX_REVIEWS_PER_USER = 30;
 const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'admin';
+const DUMMY_APP_ID = 'mycox-mock-insights'; // Placeholder ID
 
 const productList = [
     { id: 1, name: 'MyCox Connect Pro', description: 'Real-time state sharing service' },
@@ -60,10 +34,32 @@ const productList = [
 const ageRanges = ['<18', '18-24', '25-34', '35-44', '45-54', '55+'];
 const regions = ['NA', 'EU', 'AP', 'LATAM'];
 
-// Firestore Path Utilities
-const getCollectionPath = (collectionName) => `artifacts/${appId}/public/data/${collectionName}`;
-const userLimitDocRef = (db) => doc(db, getCollectionPath('limits'), 'user_count');
+// --- CRYPTOGRAPHIC HASHING FUNCTION (Kept for User ID simulation) ---
+// This function simulates the server generating a unique, anonymous ID.
+const hashPII = async (name, email) => {
+    const piiString = `${name.toLowerCase().trim()}:${email.toLowerCase().trim()}`;
+    const encoder = new TextEncoder();
+    const data = encoder.encode(piiString);
+    try {
+        // Use a simple, fast non-cryptographic hash for environments without secure context, or SHA-256 if available.
+        const hashBuffer = await (crypto.subtle?.digest('SHA-256', data) ?? new Promise(resolve => {
+            let hash = 0;
+            for (let i = 0; i < piiString.length; i++) {
+                hash = ((hash << 5) - hash) + piiString.charCodeAt(i);
+                hash |= 0; // Convert to 32bit integer
+            }
+            resolve(new TextEncoder().encode(hash.toString()).buffer);
+        }));
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+        // Fallback for extreme compatibility (simple string hash)
+        console.error("Crypto API failed. Using simple string hash.", e);
+        return piiString.split('').reduce((a, b) => {a = ((a << 5) - a) + b.charCodeAt(0); return a & a;}, 0).toString(16).replace('-', '0');
+    }
+};
 
+// --- DATA UTILITIES ---
 
 // Sentiment and Rating Icons
 const getSentimentIcon = (sentiment) => {
@@ -84,16 +80,59 @@ const getRatingStars = (rating) => {
     ));
 };
 
-// --- CRYPTOGRAPHIC HASHING FUNCTION (Client-side simulation of Server-side hashing) ---
-// IMPORTANT: In a real Next.js app, this would be done securely in an API Route!
-const hashPII = async (name, email) => {
-    const piiString = `${name.toLowerCase().trim()}:${email.toLowerCase().trim()}`;
-    const encoder = new TextEncoder();
-    const data = encoder.encode(piiString);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+// --- TEST DATA GENERATION ---
+
+// Helper to generate initial test data structures
+const generateInitialState = async () => {
+    const testUsers = [
+        { name: 'Alice Smith', email: 'alice@test.com', ageRange: '25-34', region: 'NA' },
+        { name: 'Bob Jones', email: 'bob@test.com', ageRange: '45-54', region: 'EU' },
+        { name: 'Charlie Brown', email: 'charlie@test.com', ageRange: '<18', region: 'AP' },
+    ];
+    
+    let users = {};
+    let userReviewCounts = {};
+
+    // 1. Generate Hashes for all test users
+    const usersWithHash = await Promise.all(testUsers.map(async user => ({
+        ...user,
+        hash: await hashPII(user.name, user.email),
+        createdAt: new Date(Date.now() - Math.random() * 86400000 * 7).toISOString() 
+    })));
+
+    usersWithHash.forEach((user, index) => {
+        users[user.hash] = { hash: user.hash, ageRange: user.ageRange, createdAt: user.createdAt };
+        userReviewCounts[user.hash] = { count: index === 0 ? 2 : index === 1 ? 3 : 1 };
+    });
+
+    // 2. Setup Sample Reviews
+    const reviewData = [
+        // Alice's Reviews
+        { hash: usersWithHash[0].hash, product: productList[0], rating: 5, sentiment: 'Positive', review: 'Connect Pro is blazing fast and seamless!', age: usersWithHash[0].ageRange, region: usersWithHash[0].region, timestamp: new Date(Date.now() - 3600000).toISOString() },
+        { hash: usersWithHash[0].hash, product: productList[1], rating: 3, sentiment: 'Neutral', review: 'Edge Functions work, but the documentation is a bit sparse.', age: usersWithHash[0].ageRange, region: usersWithHash[0].region, timestamp: new Date(Date.now() - 7200000).toISOString() },
+        // Bob's Reviews
+        { hash: usersWithHash[1].hash, product: productList[3], rating: 1, sentiment: 'Negative', review: 'Deploy System failed twice this week. Unreliable for production!', age: usersWithHash[1].ageRange, region: usersWithHash[1].region, timestamp: new Date(Date.now() - 10800000).toISOString() },
+        { hash: usersWithHash[1].hash, product: productList[0], rating: 5, sentiment: 'Positive', review: 'Fantastic service! Highly recommend MyCox Connect Pro.', age: usersWithHash[1].ageRange, region: usersWithHash[1].region, timestamp: new Date(Date.now() - 14400000).toISOString() },
+        { hash: usersWithHash[1].hash, product: productList[2], rating: 3, sentiment: 'Neutral', review: 'CDN speeds are okay, but not market-leading.', age: usersWithHash[1].ageRange, region: usersWithHash[1].region, timestamp: new Date(Date.now() - 18000000).toISOString() },
+        // Charlie's Review
+        { hash: usersWithHash[2].hash, product: productList[3], rating: 4, sentiment: 'Positive', review: 'The deployment process is simple and intuitive.', age: usersWithHash[2].ageRange, region: usersWithHash[2].region, timestamp: new Date(Date.now() - 21600000).toISOString() },
+    ];
+    
+    const reviews = reviewData.map((r, index) => ({
+        id: `mock-${index + 1}`,
+        hash_id: r.hash,
+        product_name: r.product.name,
+        rating: r.rating,
+        sentiment: r.sentiment,
+        review_text: r.review,
+        age_range: r.age,
+        region: r.region,
+        timestamp: r.timestamp,
+    }));
+    
+    return { users, userReviewCounts, reviews };
 };
+
 
 // --- Sub Components ---
 
@@ -113,7 +152,7 @@ const ReviewCard = React.memo(({ review }) => (
         </div>
         <p className="text-sm text-gray-600 italic">"{review.review_text.length > 120 ? review.review_text.substring(0, 120) + '...' : review.review_text}"</p>
         <div className="mt-2 text-xs text-gray-400 flex justify-between">
-            <span>Posted: {review.timestamp?.toDate().toLocaleDateString() || 'N/A'}</span>
+            <span>Posted: {new Date(review.timestamp).toLocaleDateString() || 'N/A'}</span>
             <span className="flex items-center space-x-2">
                 <span className='flex items-center'><MapPin className='w-3 h-3 mr-0.5' />{review.region}</span>
                 <span className='flex items-center'><Calendar className='w-3 h-3 mr-0.5' />{review.age_range}</span>
@@ -123,33 +162,14 @@ const ReviewCard = React.memo(({ review }) => (
 ));
 
 
-const AdminDashboard = React.memo(({ db, isAdmin }) => {
-    const [reviews, setReviews] = useState([]);
-    const [isLoading, setIsLoading] = useState(true);
+const AdminDashboard = React.memo(({ reviews }) => {
+    // Data is already loaded, so no loading state is needed here.
 
-    useEffect(() => {
-        if (!db || !isAdmin) return;
-        setIsLoading(true);
+    // Sort reviews by timestamp for "Latest Reviews" section
+    const sortedReviews = useMemo(() => {
+        return [...reviews].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }, [reviews]);
 
-        const q = query(
-            collection(db, getCollectionPath('product_reviews')),
-            orderBy('timestamp', 'desc')
-        );
-
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const fetchedReviews = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            setReviews(fetchedReviews);
-            setIsLoading(false);
-        }, (e) => {
-            console.error("Error fetching admin data:", e);
-            setIsLoading(false);
-        });
-
-        return () => unsubscribe();
-    }, [db, isAdmin]);
 
     // Aggregate Data for Dashboard Metrics
     const aggregatedData = useMemo(() => {
@@ -215,17 +235,9 @@ const AdminDashboard = React.memo(({ db, isAdmin }) => {
         );
     };
 
-    if (isLoading) {
-        return (
-            <div className="flex justify-center items-center h-64">
-                <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-            </div>
-        );
-    }
-
     return (
         <div className="space-y-8">
-            <h2 className="text-2xl font-extrabold text-gray-900 border-b pb-2">Admin Insights Dashboard</h2>
+            <h2 className="text-2xl font-extrabold text-gray-900 border-b pb-2">Admin Insights Dashboard (Mock Data)</h2>
 
             {/* Top Metrics */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -288,9 +300,9 @@ const AdminDashboard = React.memo(({ db, isAdmin }) => {
 
             {/* Latest Reviews (Raw Data) */}
             <div className="bg-white p-6 rounded-xl shadow-lg border">
-                <h3 className="text-xl font-semibold mb-4 text-gray-800">Latest User Reviews ({reviews.length})</h3>
+                <h3 className="text-xl font-semibold mb-4 text-gray-800">Latest User Reviews ({sortedReviews.length})</h3>
                 <div className="space-y-3">
-                    {reviews.slice(0, 10).map(review => (
+                    {sortedReviews.slice(0, 10).map(review => (
                         <div key={review.id} className="p-3 border-b last:border-b-0">
                             <p className="text-sm font-medium text-gray-700">{review.product_name} | Rating: {review.rating}</p>
                             <p className="text-xs text-gray-500 italic">"{review.review_text.substring(0, 80)}..."</p>
@@ -304,7 +316,7 @@ const AdminDashboard = React.memo(({ db, isAdmin }) => {
 });
 
 
-const UserDashboard = React.memo(({ db, userHash, reviews, reviewLimit }) => {
+const UserDashboard = React.memo(({ userHash, reviews, reviewLimit, onReviewSubmit }) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [productSelection, setProductSelection] = useState(null);
     const [newReviewText, setNewReviewText] = useState('');
@@ -314,7 +326,7 @@ const UserDashboard = React.memo(({ db, userHash, reviews, reviewLimit }) => {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitMessage, setSubmitMessage] = useState(null);
 
-    // Filter reviews based on search term (simulating product search)
+    // Filter reviews based on search term
     const filteredReviews = useMemo(() => {
         if (!searchTerm) return reviews;
         return reviews.filter(review =>
@@ -338,37 +350,27 @@ const UserDashboard = React.memo(({ db, userHash, reviews, reviewLimit }) => {
         // Simple sentiment logic for MVP
         const sentiment = newReviewRating >= 4 ? 'Positive' : newReviewRating <= 2 ? 'Negative' : 'Neutral';
 
-        try {
-            await addDoc(collection(db, getCollectionPath('product_reviews')), {
-                hash_id: userHash,
-                product_name: productSelection.name,
-                rating: newReviewRating,
-                sentiment: sentiment,
-                review_text: newReviewText.trim(),
-                age_range: selectedAgeRange,
-                region: selectedRegion,
-                timestamp: serverTimestamp(),
-            });
+        const newReview = {
+            hash_id: userHash,
+            product_name: productSelection.name,
+            rating: newReviewRating,
+            sentiment: sentiment,
+            review_text: newReviewText.trim(),
+            age_range: selectedAgeRange,
+            region: selectedRegion,
+            timestamp: new Date().toISOString(), // Mock timestamp
+        };
 
-            // Update user review counter (In a real Next.js app, this would be a single transaction on the server)
-            const userReviewCountRef = doc(db, getCollectionPath('user_reviews_count'), userHash);
-            const userReviewCountSnap = await getDoc(userReviewCountRef);
-
-            await setDoc(userReviewCountRef, { 
-                count: (userReviewCountSnap.exists() ? userReviewCountSnap.data().count : 0) + 1 
-            }, { merge: true });
-
-            setSubmitMessage({ type: 'success', text: 'Review submitted successfully!' });
-            setNewReviewText('');
-            setNewReviewRating(5);
-            setProductSelection(null);
-
-        } catch (e) {
-            console.error("Error submitting review:", e);
-            setSubmitMessage({ type: 'error', text: 'Failed to submit review. Try again.' });
-        } finally {
-            setIsSubmitting(false);
-        }
+        // Call parent handler to update in-memory state
+        await onReviewSubmit(newReview); 
+        
+        // Simulate success and reset form
+        setSubmitMessage({ type: 'success', text: 'Review submitted successfully!' });
+        setNewReviewText('');
+        setNewReviewRating(5);
+        setProductSelection(null);
+        
+        setIsSubmitting(false);
     };
     
     // Review form section
@@ -540,8 +542,6 @@ const AuthScreen = React.memo(({ setAuthType, authType, handleAdminLogin, handle
         } else if (authType === 'signup') {
             handleUserSignup(name, email, ageRange);
         } else if (authType === 'login') {
-             // We simulate user login by hashing their credentials and checking against the database.
-             // The userPasswordLogin is used as the 'name' in the hash function for a basic identity check.
             handleUserLogin(userEmailLogin, userPasswordLogin);
         }
     };
@@ -687,105 +687,32 @@ const AuthScreen = React.memo(({ setAuthType, authType, handleAdminLogin, handle
 
 // --- Main App Component ---
 const App = () => {
-  const [db, setDb] = useState(null);
-  const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
   const [currentUserHash, setCurrentUserHash] = useState(null);
   const [reviews, setReviews] = useState([]);
-  const [reviewLimit, setReviewLimit] = useState(0); // Tracks user's reviews
+  const [users, setUsers] = useState({}); // Hash -> User details
+  const [userReviewCounts, setUserReviewCounts] = useState({}); // Hash -> { count: N }
   const [view, setView] = useState('auth'); // 'auth', 'user', 'admin'
   const [authType, setAuthType] = useState('signup'); // 'login', 'signup', 'admin'
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 1. Firebase Initialization and Authentication
+  // 1. Initialization: Load mock data into local state
   useEffect(() => {
-    if (!firebaseConfig) {
-      setMessage({ type: 'error', text: 'Firebase configuration is missing.' });
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      
-      setDb(firestore);
-      setAuth(firebaseAuth);
-
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (!user) {
-          try {
-            if (initialAuthToken) {
-              await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            } else {
-              await signInAnonymously(firebaseAuth);
-            }
-          } catch (e) {
-            console.error("Authentication failed:", e);
-            setMessage({ type: 'error', text: "Failed to sign in." });
-          }
-        }
-        if (firebaseAuth.currentUser) {
-          setUserId(firebaseAuth.currentUser.uid);
-          setLoading(false);
-        }
-      });
-
-      return () => unsubscribe();
-    } catch (e) {
-      console.error("Firebase initialization failed:", e);
-      setMessage({ type: 'error', text: "Failed to initialize Firebase services." });
-      setLoading(false);
-    }
+    const initData = async () => {
+        const initialData = await generateInitialState();
+        setUsers(initialData.users);
+        setReviews(initialData.reviews);
+        setUserReviewCounts(initialData.userReviewCounts);
+        setLoading(false);
+    };
+    initData();
   }, []);
-
-  // 2. Real-time Data Listener for all reviews (for Dashboard and User feed)
-  useEffect(() => {
-    if (!db || view === 'auth') return;
-
-    const q = query(
-      collection(db, getCollectionPath('product_reviews')),
-      orderBy('timestamp', 'desc'),
-      limit(30) // Only latest 30 reviews for the public feed
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedItems = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setReviews(fetchedItems);
-    }, (e) => {
-        console.error("Error fetching review data:", e);
-    });
-
-    return () => unsubscribe();
-  }, [db, view]);
   
-  // 3. Real-time Data Listener for user's review count
-  useEffect(() => {
-    if (!db || !currentUserHash) return;
-    
-    const countRef = doc(db, getCollectionPath('user_reviews_count'), currentUserHash);
-
-    const unsubscribe = onSnapshot(countRef, (docSnap) => {
-        if (docSnap.exists()) {
-            setReviewLimit(docSnap.data().count || 0);
-        } else {
-            setReviewLimit(0);
-        }
-    }, (e) => {
-        console.error("Error fetching user review count:", e);
-    });
-
-    return () => unsubscribe();
-  }, [db, currentUserHash]);
+  const currentReviewLimit = currentUserHash ? (userReviewCounts[currentUserHash]?.count || 0) : 0;
 
 
-  // --- AUTH HANDLERS ---
+  // --- AUTH HANDLERS (In-Memory Simulation) ---
   
   const clearAuth = () => {
     setCurrentUserHash(null);
@@ -810,18 +737,15 @@ const App = () => {
     setMessage(null);
     try {
         const hash = await hashPII(name, email);
-        const userRef = doc(db, getCollectionPath('users'), hash);
-        const userSnap = await getDoc(userRef);
 
-        if (userSnap.exists()) {
+        if (users[hash]) {
             setCurrentUserHash(hash);
             setView('user');
-            setMessage({ type: 'success', text: 'Welcome back! Logged in anonymously.' });
+            setMessage({ type: 'success', text: `Welcome back! Logged in anonymously as user hash ID starting with: ${hash.substring(0, 10)}...` });
         } else {
             setMessage({ type: 'error', text: 'User hash not found. Please sign up first.' });
         }
     } catch (e) {
-        console.error(e);
         setMessage({ type: 'error', text: 'Error during login check.' });
     }
     setIsSubmitting(false);
@@ -831,54 +755,61 @@ const App = () => {
     setIsSubmitting(true);
     setMessage(null);
     
-    // --- SERVERLESS FUNCTION SIMULATION START (Security Boundary) ---
     try {
         const hash = await hashPII(name, email);
-        const userRef = doc(db, getCollectionPath('users'), hash);
-        const userSnap = await getDoc(userRef);
 
-        if (userSnap.exists()) {
+        if (users[hash]) {
             setMessage({ type: 'error', text: 'You are already signed up. Please use the login option.' });
             setAuthType('login');
             return;
         }
 
-        // Check user limit using a transaction for atomic update
-        await runTransaction(db, async (transaction) => {
-            const limitRef = userLimitDocRef(db);
-            const limitSnap = await transaction.get(limitRef);
-            
-            const currentCount = limitSnap.exists() ? limitSnap.data().count : 0;
-            
-            if (currentCount >= MAX_USERS) {
-                throw new Error(`User signup limit of ${MAX_USERS} reached. MVP is full.`);
-            }
+        if (Object.keys(users).length >= MAX_USERS) {
+            setMessage({ type: 'error', text: `User signup limit of ${MAX_USERS} reached. Mock system is full.` });
+            return;
+        }
 
-            // 1. Create the user's anonymous hash entry
-            transaction.set(userRef, { hash, ageRange, createdAt: serverTimestamp() });
-            
-            // 2. Increment the global user count
-            transaction.set(limitRef, { count: currentCount + 1 });
-        });
+        // 1. Create the user's anonymous hash entry
+        const newUser = { hash, ageRange, createdAt: new Date().toISOString() };
+        setUsers(prev => ({ ...prev, [hash]: newUser }));
+        
+        // 2. Initialize review count to 0
+        setUserReviewCounts(prev => ({ ...prev, [hash]: { count: 0 } }));
 
-        // If transaction succeeds
         setCurrentUserHash(hash);
         setView('user');
-        setMessage({ type: 'success', text: 'Signup successful! Your anonymous ID has been created.' });
+        setMessage({ type: 'success', text: `Signup successful! Your anonymous ID starts with: ${hash.substring(0, 10)}...` });
 
     } catch (e) {
         console.error("Signup failed:", e);
-        if (e.message.includes('User signup limit')) {
-             setMessage({ type: 'error', text: e.message });
-        } else {
-            setMessage({ type: 'error', text: 'Signup failed due to a database error.' });
-        }
+        setMessage({ type: 'error', text: 'Signup failed due to an application error.' });
     } finally {
         setIsSubmitting(false);
     }
-    // --- SERVERLESS FUNCTION SIMULATION END ---
   };
-
+  
+  // --- DATA HANDLER (In-Memory Simulation) ---
+  const handleReviewSubmit = useCallback((newReview) => {
+    return new Promise(resolve => {
+        const reviewWithId = {
+            ...newReview,
+            id: `mock-review-${Date.now()}-${Math.random()}`,
+        };
+        
+        // 1. Add review to the main list
+        setReviews(prevReviews => [reviewWithId, ...prevReviews]); // Add to the front to appear first
+        
+        // 2. Update user's review count
+        setUserReviewCounts(prevCounts => ({
+            ...prevCounts,
+            [newReview.hash_id]: { 
+                count: (prevCounts[newReview.hash_id]?.count || 0) + 1 
+            }
+        }));
+        
+        resolve();
+    });
+  }, []);
 
   // --- RENDER LOGIC ---
 
@@ -886,7 +817,7 @@ const App = () => {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50 font-inter">
         <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-        <p className="ml-3 text-lg font-medium text-gray-700">Connecting to MyCox Firestore...</p>
+        <p className="ml-3 text-lg font-medium text-gray-700">Loading In-Memory Data...</p>
       </div>
     );
   }
@@ -895,7 +826,7 @@ const App = () => {
     <div className="flex justify-between items-center mb-8 border-b pb-4">
         <h1 className="text-3xl font-extrabold text-gray-900 flex items-center">
             <BarChart3 className="w-8 h-8 text-indigo-600 mr-2" />
-            <span className="text-indigo-600">MyCox</span> Insights Platform
+            <span className="text-indigo-600">MyCox</span> Insights Platform (Mock)
         </h1>
         
         {view !== 'auth' && (
@@ -934,19 +865,18 @@ const App = () => {
           </div>
         )}
 
-        {view === 'user' && (
+        {view === 'user' && currentUserHash && (
             <UserDashboard 
-                db={db}
                 userHash={currentUserHash}
                 reviews={reviews}
-                reviewLimit={reviewLimit}
+                reviewLimit={currentReviewLimit}
+                onReviewSubmit={handleReviewSubmit}
             />
         )}
         
         {view === 'admin' && (
             <AdminDashboard 
-                db={db} 
-                isAdmin={true}
+                reviews={reviews} 
             />
         )}
       </div>
