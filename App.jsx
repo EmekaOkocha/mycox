@@ -42,7 +42,7 @@ import {
 // --- Global Variables (Mandatory for Canvas Environment) ---
 const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
 const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'vercel-product-insights';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'mycox-product-insights';
 
 // --- MVP CONSTANTS ---
 const MAX_USERS = 50;
@@ -51,10 +51,10 @@ const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'admin';
 
 const productList = [
-    { id: 1, name: 'Vercel Connect', description: 'Real-time state sharing service' },
-    { id: 2, name: 'Vercel Functions', description: 'Serverless compute engine' },
-    { id: 3, name: 'Vercel Edge', description: 'Global content delivery network' },
-    { id: 4, name: 'Vercel Deployments', description: 'Continuous integration system' },
+    { id: 1, name: 'MyCox Connect Pro', description: 'Real-time state sharing service' },
+    { id: 2, name: 'MyCox Edge Functions', description: 'Serverless compute engine' },
+    { id: 3, name: 'MyCox Global CDN', description: 'Global content delivery network' },
+    { id: 4, name: 'MyCox Deploy System', description: 'Continuous integration system' },
 ];
 
 const ageRanges = ['<18', '18-24', '25-34', '35-44', '45-54', '55+'];
@@ -886,7 +886,7 @@ const App = () => {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50 font-inter">
         <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
-        <p className="ml-3 text-lg font-medium text-gray-700">Connecting to Vercel Firestore...</p>
+        <p className="ml-3 text-lg font-medium text-gray-700">Connecting to MyCox Firestore...</p>
       </div>
     );
   }
@@ -895,7 +895,7 @@ const App = () => {
     <div className="flex justify-between items-center mb-8 border-b pb-4">
         <h1 className="text-3xl font-extrabold text-gray-900 flex items-center">
             <BarChart3 className="w-8 h-8 text-indigo-600 mr-2" />
-            <span className="text-indigo-600">Vercel</span> Product Insights
+            <span className="text-indigo-600">MyCox</span> Insights Platform
         </h1>
         
         {view !== 'auth' && (
